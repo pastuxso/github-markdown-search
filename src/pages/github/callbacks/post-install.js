@@ -2,10 +2,26 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { throttling } from "@octokit/plugin-throttling";
 
-function* chunkArray(arr, chunkSize) {
-  for (let i = 0; i < arr.length; i += chunkSize) {
-    yield arr.slice(i, i + chunkSize);
+function splitIntoChunks(array, maxLength) {
+  const chunks = [];
+  let currentChunk = [];
+
+  for (const item of array) {
+    const chunkLength = currentChunk.join(" ").length;
+
+    if (chunkLength + item.length + 1 <= maxLength) {
+      currentChunk.push(item);
+    } else {
+      chunks.push(currentChunk.join(" "));
+      currentChunk = [item];
+    }
   }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join(" "));
+  }
+
+  return chunks;
 }
 
 export async function getServerSideProps({ query: { installation_id: installationId } }) {
@@ -56,10 +72,15 @@ export async function getServerSideProps({ query: { installation_id: installatio
 
   const repoQuery = repositories.map((repo) => `repo:${repo.full_name}`);
 
+  // https://docs.github.com/en/rest/search/search?apiVersion=2022-11-28#limitations-on-query-length
+  const prefix = "language:Markdown ";
+  const maxChunkLength = 256 - prefix.length;
+
+  const chunks = splitIntoChunks(repoQuery, maxChunkLength);
   let data = [];
-  for (const repos of chunkArray(repoQuery, 10)) {
+  for (const repos of chunks) {
     const partialData = await octokit.paginate(octokit.search.code, {
-      q: `language:Markdown ${repos.join(" ")}`,
+      q: `${prefix} ${repos}`,
       per_page: 100,
     });
 
@@ -79,7 +100,7 @@ export default function PostInstall({ files, repos, started, finished }) {
   return (
     <section>
       <h1>Post Install</h1>
-      <pre>{repos.join(" OR ")}</pre>
+      <pre>{repos.join(" ")}</pre>
       <pre>
         Repositories: {repos.length} Files: {files.length} - Started: {started} Finished: {finished}
       </pre>
