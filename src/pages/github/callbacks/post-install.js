@@ -2,8 +2,15 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { throttling } from "@octokit/plugin-throttling";
 
+function* chunkArray(arr, chunkSize) {
+  for (let i = 0; i < arr.length; i += chunkSize) {
+    yield arr.slice(i, i + chunkSize);
+  }
+}
+
 export async function getServerSideProps({ query: { installation_id: installationId } }) {
   const OctokitInstance = Octokit.plugin(throttling);
+  const started = new Date().toISOString();
 
   const auth = createAppAuth({
     appId: process.env.GITHUB_INSTALL_APP_ID,
@@ -21,9 +28,11 @@ export async function getServerSideProps({ query: { installation_id: installatio
     auth: token,
     throttle: {
       onRateLimit: (retryAfter, options, octokit, retryCount) => {
-        octokit.log.warn(`Request quota exhausted for request ${options.method} ${options.url}`);
+        octokit.log.warn(
+          `Request quota exhausted for request ${options.method} ${options.url} Retrying after ${retryAfter} seconds!`
+        );
 
-        if (retryCount < 1) {
+        if (retryCount < 2) {
           // only retries once
           octokit.log.info(`Retrying after ${retryAfter} seconds!`);
           return true;
@@ -41,17 +50,17 @@ export async function getServerSideProps({ query: { installation_id: installatio
   const repositories = (
     await octokit.paginate(octokit.apps.listReposAccessibleToInstallation, {
       installation_id: installationId,
-      per_page: 50,
+      per_page: 100,
     })
   ).filter((repo) => !repo.fork);
 
   const repoQuery = repositories.map((repo) => `repo:${repo.full_name}`);
 
   let data = [];
-  for (let repo of repoQuery) {
+  for (const repos of chunkArray(repoQuery, 10)) {
     const partialData = await octokit.paginate(octokit.search.code, {
-      q: `language:Markdown ${repo}`,
-      per_page: 50,
+      q: `language:Markdown ${repos.join(" ")}`,
+      per_page: 100,
     });
 
     data.push(...partialData);
@@ -62,16 +71,17 @@ export async function getServerSideProps({ query: { installation_id: installatio
     path: item.path,
   }));
 
-  return { props: { files, repos: repoQuery } };
+  const finished = new Date().toISOString();
+  return { props: { files, repos: repoQuery, started, finished } };
 }
 
-export default function PostInstall({ files, repos }) {
+export default function PostInstall({ files, repos, started, finished }) {
   return (
     <section>
       <h1>Post Install</h1>
       <pre>{repos.join(" OR ")}</pre>
       <pre>
-        Repositories: {repos.length} Files: {files.length}
+        Repositories: {repos.length} Files: {files.length} - Started: {started} Finished: {finished}
       </pre>
       <pre>{JSON.stringify(files, null, " ")}</pre>
     </section>
