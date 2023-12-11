@@ -1,7 +1,10 @@
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { throttling } from "@octokit/plugin-throttling";
 
 export async function getServerSideProps({ query: { installation_id: installationId } }) {
+  const OctokitInstance = Octokit.plugin(throttling);
+
   const auth = createAppAuth({
     appId: process.env.GITHUB_INSTALL_APP_ID,
     clientId: process.env.GITHUB_INSTALL_CLIEN_ID,
@@ -14,32 +17,69 @@ export async function getServerSideProps({ query: { installation_id: installatio
     installationId: installationId,
   });
 
-  const octokit = new Octokit({ auth: token });
+  const octokit = new OctokitInstance({
+    auth: token,
+    throttle: {
+      onRateLimit: (retryAfter, options, octokit, retryCount) => {
+        octokit.log.warn(`Request quota exhausted for request ${options.method} ${options.url}`);
 
-  const resp = await octokit.apps.listReposAccessibleToInstallation({
-    installation_id: installationId,
+        if (retryCount < 1) {
+          // only retries once
+          octokit.log.info(`Retrying after ${retryAfter} seconds!`);
+          return true;
+        }
+      },
+      onSecondaryRateLimit: (retryAfter, options, octokit) => {
+        // does not retry, only logs a warning
+        octokit.log.warn(
+          `SecondaryRateLimit detected for request ${options.method} ${options.url}`
+        );
+      },
+    },
   });
 
-  const repos = resp.data.repositories.map((repo) => `repo:${repo.full_name}`).join(" AND ");
+  const repositories = (
+    await octokit.paginate(octokit.apps.listReposAccessibleToInstallation, {
+      installation_id: installationId,
+      per_page: 50,
+    })
+  ).filter((repo) => !repo.fork);
 
-  const { data } = await octokit.search.code({
-    q: `language:Markdown ${repos}`,
-  });
+  const repoQuery = repositories.map((repo) => `repo:${repo.full_name}`);
 
-  const files = data.items.map((item) => ({
+  let data = [];
+  for (let repo of repoQuery) {
+    const partialData = await octokit.paginate(octokit.search.code, {
+      q: `language:Markdown ${repo}`,
+      per_page: 50,
+    });
+
+    data.push(...partialData);
+  }
+
+  const files = data.map((item) => ({
     repository: item.repository.full_name,
     path: item.path,
   }));
 
-  return { props: { files, repos } };
+  return { props: { files, repos: repoQuery } };
 }
 
 export default function PostInstall({ files, repos }) {
   return (
     <section>
       <h1>Post Install</h1>
-      <pre>{JSON.stringify(repos, null, " ")}</pre>
+      <pre>{repos.join(" OR ")}</pre>
+      <pre>
+        Repositories: {repos.length} Files: {files.length}
+      </pre>
       <pre>{JSON.stringify(files, null, " ")}</pre>
     </section>
   );
 }
+
+// manual pagination
+/*while (octokit.hasNextPage(searchResult)) {
+  searchResult = await octokit.getNextPage(searchResult);
+  // Process additional search results
+}*/
