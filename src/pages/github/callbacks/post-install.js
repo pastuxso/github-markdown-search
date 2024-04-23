@@ -1,5 +1,5 @@
-import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { createAppAuth } from "@octokit/auth-app";
 import { throttling } from "@octokit/plugin-throttling";
 
 function splitIntoChunks(array, maxLength) {
@@ -68,7 +68,10 @@ export async function getServerSideProps({ query: { installation_id: installatio
       installation_id: installationId,
       per_page: 100,
     })
-  ).filter((repo) => !repo.fork);
+  )
+    .filter((repo) => !repo.fork)
+    .sort((a, b) => new Date(b.pushed_at) - new Date(a.pushed_at))
+    .slice(0, 25);
 
   const repoQuery = repositories.map((repo) => `repo:${repo.full_name}`);
 
